@@ -305,7 +305,17 @@ def load_model_pipeline(
 ) -> Any:
     """Creates a Hugging Face inference pipeline for a model id."""
     hf_pipeline = _require_transformers_pipeline()
-    return hf_pipeline(task=task, model=model_id, tokenizer=model_id, device=device)
+    try:
+        return hf_pipeline(
+            task=task,
+            model=model_id,
+            tokenizer=model_id,
+            device=device,
+            model_kwargs={"use_safetensors": True},
+        )
+    except (OSError, RuntimeError):
+        # Fallback: try without use_safetensors (some older models have no safetensors file)
+        return hf_pipeline(task=task, model=model_id, tokenizer=model_id, device=device)
 
 
 def _extract_best_output(item: Any) -> dict:
