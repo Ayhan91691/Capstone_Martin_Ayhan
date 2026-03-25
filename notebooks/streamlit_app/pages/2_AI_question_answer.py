@@ -1,17 +1,35 @@
 import streamlit as st
 import pandas as pd
+from pathlib import Path
+import os
 
 from ml_functions.ml_rag_qa_groq import (
     ask_bmw_rag_question_groq,
     load_prompt_configs,
 )
 
-
+# =========================
+# PAGE CONFIG
+# =========================
 st.set_page_config(
     page_title="Feedback Q&A",
     page_icon="💬",
     layout="wide",
 )
+
+# =========================
+# PATH SETUP (ROOT 🔥)
+# =========================
+BASE_DIR = Path(__file__).resolve().parents[2]
+RAG_DIR = BASE_DIR / "notebooks/My_BMW_en_raw_clean_rag"
+
+# Debug (optional)
+#with st.sidebar:
+    #st.markdown("### 🔍 Debug Info")
+    #st.write("Working Dir:", os.getcwd())
+    #st.write("Base Dir:", BASE_DIR)
+    #st.write("RAG Dir:", RAG_DIR)
+    #st.write("config.json exists:", (RAG_DIR / "config.json").exists())
 
 # =========================
 # LOAD PROMPTS
@@ -20,8 +38,9 @@ prompt_configs = load_prompt_configs()
 prompt_keys = list(prompt_configs.keys())
 
 if "selected_prompt_key" not in st.session_state:
-    st.session_state["selected_prompt_key"] = "strict" if "strict" in prompt_configs else prompt_keys[0]
-
+    st.session_state["selected_prompt_key"] = (
+        "strict" if "strict" in prompt_configs else prompt_keys[0]
+    )
 
 # =========================
 # STYLE
@@ -95,10 +114,10 @@ st.markdown(
 )
 
 # =========================
-# SIDEBAR
+# SIDEBAR SETTINGS
 # =========================
 with st.sidebar:
-    st.header("Settings")
+    st.header("⚙️ Settings")
 
     selected_k = st.slider("Top Reviews", 5, 25, 10)
     negative_only = st.toggle("Negative only", True)
@@ -110,11 +129,10 @@ with st.sidebar:
 
     temperature = st.slider(
         "Temperature",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.0,
+        0.0,
+        1.0,
+        0.0,
         step=0.1,
-        help="Controls randomness. 0 = deterministic, 1 = more creative",
     )
 
     selected_prompt_key = st.selectbox(
@@ -125,13 +143,12 @@ with st.sidebar:
     )
 
     st.session_state["selected_prompt_key"] = selected_prompt_key
-
     st.caption(prompt_configs[selected_prompt_key]["description"])
 
 # =========================
 # INPUT
 # =========================
-col1, col2, col3 = st.columns([6, 1.5, 1.5], vertical_alignment="bottom")
+col1, col2, col3 = st.columns([6, 1.5, 1.5])
 
 with col1:
     question = st.text_input(
@@ -141,10 +158,10 @@ with col1:
     )
 
 with col2:
-    ask_clicked = st.button("Ask", width="stretch")
+    ask_clicked = st.button("Ask", use_container_width=True)
 
 with col3:
-    clear_clicked = st.button("Clear", width="stretch")
+    clear_clicked = st.button("Clear", use_container_width=True)
 
 # =========================
 # CLEAR
@@ -161,16 +178,27 @@ if ask_clicked:
         st.warning("Please enter a question.")
     else:
         with st.spinner("Thinking..."):
-            result = ask_bmw_rag_question_groq(
-                question=question,
-                k=selected_k,
-                negative_only=negative_only,
-                model_name=model_name,
-                temperature=temperature,
-                prompt_key=selected_prompt_key,
-                max_context_chars=500,
-            )
-            st.session_state["qa_result"] = result
+            try:
+                result = ask_bmw_rag_question_groq(
+                    question=question,
+                    k=selected_k,
+                    negative_only=negative_only,
+                    model_name=model_name,
+                    temperature=temperature,
+                    prompt_key=selected_prompt_key,
+                    max_context_chars=500
+                )
+                st.session_state["qa_result"] = result
+
+            except FileNotFoundError as e:
+                st.error("❌ RAG Daten nicht gefunden!")
+                st.code(str(e))
+                st.stop()
+
+            except Exception as e:
+                st.error("❌ Unerwarteter Fehler")
+                st.code(str(e))
+                st.stop()
 
 # =========================
 # RESULT
@@ -178,70 +206,25 @@ if ask_clicked:
 result = st.session_state.get("qa_result")
 
 if result:
+    # KPIs
     colA, colB, colC, colD, colE = st.columns(5)
 
-    with colA:
-        st.markdown(
-            f"<div class='kpi-card'><b>Model</b><br>{result['model_name']}</div>",
-            unsafe_allow_html=True,
-        )
+    colA.metric("Model", result["model_name"])
+    colB.metric("Used", len(result["sources"]))
+    colC.metric("Mode", "Negative" if negative_only else "All")
+    colD.metric("Temp", result["temperature"])
+    colE.metric("Prompt", result["prompt_label"])
 
-    with colB:
-        st.markdown(
-            f"<div class='kpi-card'><b>Used in Answer</b><br>{len(result['sources'])}</div>",
-            unsafe_allow_html=True,
-        )
-
-    with colC:
-        st.markdown(
-            f"<div class='kpi-card'><b>Mode</b><br>{'Negative' if negative_only else 'All'}</div>",
-            unsafe_allow_html=True,
-        )
-
-    with colD:
-        st.markdown(
-            f"<div class='kpi-card'><b>Temperature</b><br>{result['temperature']}</div>",
-            unsafe_allow_html=True,
-        )
-
-    with colE:
-        st.markdown(
-            f"<div class='kpi-card'><b>Prompt</b><br>{result['prompt_label']}</div>",
-            unsafe_allow_html=True,
-        )
-
-    colF, colG, colH = st.columns(3)
-
-    with colF:
-        st.markdown(
-            f"<div class='kpi-card'><b>Dataset Size</b><br>{result.get('dataset_size', '-')}</div>",
-            unsafe_allow_html=True,
-        )
-
-    with colG:
-        st.markdown(
-            f"<div class='kpi-card'><b>Candidate Pool</b><br>{result.get('candidate_pool', '-')}</div>",
-            unsafe_allow_html=True,
-        )
-
-    with colH:
-        st.markdown(
-            f"<div class='kpi-card'><b>Retrieved</b><br>{result.get('retrieved_count', '-')}</div>",
-            unsafe_allow_html=True,
-        )
-
+    # Tabs
     tab1, tab2, tab3 = st.tabs(["💡 Answer", "📚 Sources", "🧾 Context"])
 
     with tab1:
-        st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-        st.subheader("Answer")
-        st.markdown(f"<div class='answer-box'>{result['answer']}</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("### Answer")
+        st.markdown(result["answer"])
 
     with tab2:
         df = result["sources"].copy()
-        cols = [c for c in ["content", "score", "distance"] if c in df.columns]
-        st.dataframe(df[cols], width="stretch")
+        st.dataframe(df, use_container_width=True)
 
     with tab3:
         for i, txt in enumerate(result["used_reviews"], 1):

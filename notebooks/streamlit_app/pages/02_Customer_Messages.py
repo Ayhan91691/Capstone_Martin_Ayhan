@@ -1,295 +1,331 @@
 import streamlit as st
-import pandas as pd
 import sys
 import os
 import resend
+import uuid
+import json
+from dotenv import load_dotenv
+from groq import Groq
+from datetime import datetime
+
+# =============================
+# ENV
+# =============================
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+
+client = Groq(api_key=GROQ_API_KEY)
+resend.api_key = RESEND_API_KEY
+
+# =============================
+# PATH
+# =============================
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(BASE_DIR)
-from datetime import datetime
+
 from utils.sentiment import predict_sentiment_batch
 from utils.state import init_state
+
 init_state()
 
-resend.api_key = "re_4k5WuXY6_Tsrdqb5f2t71mPJSi7exLw6n"
+# =============================
+# 🤖 MULTI-TICKET AI
+# =============================
+def generate_tickets_from_message(msg):
 
+    prompt = f"""
+You are a senior product manager.
+
+Analyze the customer message and split it into distinct issues.
+
+Return a JSON ARRAY of tickets.
+
+Each ticket must include:
+- title (short, specific)
+- priority (High, Medium, Low)
+- summary (clear description)
+- labels (max 3)
+- subtasks (4-6 professional product tasks including technical + UX + validation)
+
+IMPORTANT:
+- If multiple problems exist → create MULTIPLE tickets
+- Subtasks must be specific, actionable, and realistic
+- No generic tasks like "Investigate"
+- Write like a senior product owner
+
+Customer message:
+{msg['text']}
+
+Return ONLY JSON ARRAY:
+[
+  {{
+    "title": "...",
+    "priority": "...",
+    "summary": "...",
+    "labels": ["...", "..."],
+    "subtasks": ["...", "..."]
+  }}
+]
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+
+        data = json.loads(response.choices[0].message.content)
+
+    except:
+        data = [{
+            "title": msg["text"][:50],
+            "priority": "Medium",
+            "summary": msg["text"],
+            "labels": ["general"],
+            "subtasks": [
+                "Analyze user issue in detail",
+                "Identify root cause in system",
+                "Design solution approach",
+                "Implement fix and validate"
+            ]
+        }]
+
+    tickets = []
+
+    for item in data:
+        tickets.append({
+            "id": str(uuid.uuid4()),
+            "title": item["title"],
+            "description": item["summary"],
+            "priority": item["priority"],
+            "status": "Backlog",
+            "customer_name": msg["name"],
+            "labels": item.get("labels", []),
+            "comments": [],
+            "subtasks": [{"text": s, "done": False} for s in item["subtasks"]]
+        })
+
+    return tickets
+
+# =============================
+# 🤖 SUBJECT
+# =============================
+def generate_subject(msg):
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{
+                "role": "user",
+                "content": f"Write a short email subject (max 8 words): {msg['text']}"
+            }]
+        )
+
+        subject = response.choices[0].message.content.strip()
+        subject = subject.replace("\n", " ")
+        return subject[:80]
+
+    except:
+        return "Support Response"
+
+# =============================
+# 🤖 EMAIL BODY
+# =============================
+def generate_ai_reply(msg):
+
+    prompt = f"""
+You are a professional support agent at MA Analytics.
+
+Write ONLY the email body.
+
+Rules:
+- No greeting
+- No name
+- No subject
+- No signature
+
+Structure:
+1. Appreciation
+2. "Following action points we have taken:"
+3. Bullet points
+4. Closing text
+
+Message:
+{msg['text']}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        text = response.choices[0].message.content.strip()
+
+        text = text.replace(msg["name"], "")
+        text = text.replace("Hello", "")
+        text = text.replace("Dear", "")
+
+        text = text.replace("\n\n", "<br><br>").replace("\n", "<br>")
+
+        return text
+
+    except:
+        return "Thank you for your feedback. We are working on improvements."
+
+# =============================
+# ✉️ EMAIL TEMPLATE
+# =============================
 def send_email(to_email, subject, name, reply):
 
-    import resend
+    subject = subject.replace("\n", " ")
 
-    r = resend.Emails.send({
+    LOGO_URL = "https://raw.githubusercontent.com/Ayhan91691/Capstone_Martin_Ayhan/main/notebooks/streamlit_app/logo.jpeg"
+
+    html = f"""
+    <div style="font-family:Arial; max-width:600px; margin:auto; background:#f9fafb; border-radius:10px; overflow:hidden;">
+
+        <div style="background:#0f172a; padding:20px;">
+            <img src="{LOGO_URL}" style="height:50px;">
+        </div>
+
+        <div style="padding:30px; background:white;">
+            <h2>Hello {name},</h2>
+
+            <p style="line-height:1.6;">
+                {reply}
+            </p>
+
+            <p style="margin-top:20px;">
+                Best regards,<br>
+                Customer Support Agent<br>
+                <strong>MA Analytics</strong>
+            </p>
+        </div>
+
+        <div style="padding:15px; font-size:12px; text-align:center; color:#777;">
+            MA Analytics GmbH · Berlin · support@ma-analytics.ai
+        </div>
+    </div>
+    """
+
+    resend.Emails.send({
         "from": "MA Analytics <onboarding@resend.dev>",
         "to": to_email,
         "subject": subject,
-        "html": f"""
-<html>
-<body style="margin:0; padding:0; background:#f3f4f6; font-family:Arial, sans-serif;">
-
-<!-- PREVIEW TEXT (Inbox Vorschau) -->
-<span style="display:none; max-height:0; overflow:hidden;">
-Your request has been received – MA Analytics Support Team
-</span>
-
-<!-- CONTAINER -->
-<table width="100%" cellspacing="0" cellpadding="0">
-<tr>
-<td align="center">
-
-<!-- CARD -->
-<table width="600" cellspacing="0" cellpadding="0" style="background:white; border-radius:12px; overflow:hidden;">
-
-<!-- HEADER -->
-<tr>
-<td style="background:#111827; padding:20px 30px;">
-    <table width="100%">
-        <tr>
-            <td align="left">
-                <img src="https://raw.githubusercontent.com/Ayhan91691/Capstone_Martin_Ayhan/main/logo.jpeg"
-                     alt="MA Analytics"
-                     style="height:40px;">
-            </td>
-            <td align="right" style="color:#9ca3af; font-size:12px;">
-                Customer Intelligence
-            </td>
-        </tr>
-    </table>
-</td>
-</tr>
-
-<!-- BODY -->
-<tr>
-<td style="padding:40px 30px;">
-
-    <h2 style="margin:0 0 20px; font-size:22px; color:#111827;">
-        Hello {name},
-    </h2>
-
-    <p style="
-        font-size:15px;
-        line-height:1.6;
-        color:#374151;
-        white-space:pre-line;
-        margin:0 0 25px;
-    ">
-{reply}
-    </p>
-
-    <!-- BUTTON -->
-    <a href="#" style="
-        display:inline-block;
-        padding:12px 20px;
-        background:#2563eb;
-        color:white;
-        text-decoration:none;
-        border-radius:8px;
-        font-size:14px;
-        font-weight:500;
-    ">
-        View your request
-    </a>
-
-</td>
-</tr>
-
-<!-- FOOTER -->
-<tr>
-<td style="background:#f9fafb; padding:25px; text-align:center;">
-
-    <p style="margin:0; font-size:13px; color:#6b7280;">
-        MA Analytics GmbH<br>
-        Data Science & AI Solutions
-    </p>
-
-    <p style="margin:10px 0 0; font-size:12px; color:#9ca3af;">
-        📍 Berlin, Germany<br>
-        📧 support@ma-analytics.ai<br>
-        🌐 www.ma-analytics.ai
-    </p>
-
-    <p style="margin-top:15px; font-size:11px; color:#d1d5db;">
-        © 2026 MA Analytics — All rights reserved
-    </p>
-
-</td>
-</tr>
-
-</table>
-
-</td>
-</tr>
-</table>
-
-</body>
-</html>
-"""
+        "html": html
     })
 
-    return r
-
-st.title("📩 Customer Messages AI")
-
-# -------------------------------
-# SESSION STATE (Speicher)
-# -------------------------------
+# =============================
+# STATE
+# =============================
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "tickets" not in st.session_state:
+    st.session_state.tickets = []
 
 if "selected_msg" not in st.session_state:
     st.session_state.selected_msg = None
 
-# -------------------------------
-# LAYOUT
-# -------------------------------
+# =============================
+# UI
+# =============================
+st.title("📩 Customer Messages AI")
+
 col1, col2 = st.columns([2, 1])
 
-# ===============================
-# LEFT → FORM
-# ===============================
+# =============================
+# INPUT
+# =============================
 with col1:
-    st.header("📝 New Customer Message")
 
-    name = st.text_input("First Name")
+    name = st.text_input("Name")
     email = st.text_input("Email")
     message = st.text_area("Message")
 
     if st.button("Send Message"):
+
         if message:
 
             sentiment = predict_sentiment_batch([message])[0]
 
-            new_msg = {
-                "name": name,
+            msg = {
+                "name": name or "Customer",
                 "email": email,
                 "text": message,
                 "sentiment": sentiment,
                 "time": datetime.now().strftime("%H:%M"),
-                "read": False
+                "date": datetime.now().strftime("%d.%m.%Y")
             }
 
-            st.session_state.messages.append(new_msg)
+            st.session_state.messages.append(msg)
 
-            st.success("✅ Message received!")
+            tickets = generate_tickets_from_message(msg)
+            for t in tickets:
+                st.session_state.tickets.append(t)
+
+            st.success("✅ Message → AI Tickets created")
             st.rerun()
 
-# ===============================
-# RIGHT → INBOX
-# ===============================
+# =============================
+# INBOX
+# =============================
 with col2:
-    # 🔥 CLEAR BUTTON STATE
-    if "confirm_clear" not in st.session_state:
-        st.session_state.confirm_clear = False
-# BUTTON
-    if st.button("🗑️ Clear Inbox"):
-        st.session_state.confirm_clear = True
-# CONFIRMATION
-    if st.session_state.confirm_clear:
-        st.warning("Are you sure you want to delete all messages?")
 
-        col_yes, col_no = st.columns(2)
-
-        with col_yes:
-            if st.button("✅ Yes, delete all"):
-                st.session_state.messages = []
-                st.session_state.selected_msg = None
-                st.session_state.confirm_clear = False
-                st.rerun()
-
-        with col_no:
-            if st.button("❌ Cancel"):
-                st.session_state.confirm_clear = False
-
-## 📬 GMAIL STYLE INBOX
     st.markdown("### 📥 Inbox")
 
-    for real_index in range(len(st.session_state.messages) - 1, -1, -1): 
-        msg = st.session_state.messages[real_index]
+    for i in range(len(st.session_state.messages) - 1, -1, -1):
 
-        is_unread = not msg["read"]
+        msg = st.session_state.messages[i]
 
-        col_del, col_main = st.columns([1, 10])
+        if st.button(
+            f"{msg['name']} ({msg['time']}) — {msg['text'][:30]}",
+            key=i
+        ):
+            st.session_state.selected_msg = i
 
-        with col_del:
-            if st.button("🗑️", key=f"delete_{real_index}"):
-                st.session_state.messages.pop(real_index)
-                if st.session_state.selected_msg == real_index:
-                    st.session_state.selected_msg = None
-                elif(
-                    st.session_state.selected_msg is not None
-                    and st.session_state.selected_msg > real_index
-                ):
-                    st.session_state.selected_msg -= 1
-                st.rerun()
-        
-        with col_main:
-            if st.button(
-                f"{'🔴 ' if is_unread else ''}{msg['name']} — {msg['text'][:40]}...",
-                key=f"msg_{real_index}"
-            ):
-                st.session_state.selected_msg = real_index
-                st.session_state.messages[real_index]["read"] = True
-
-# ===============================
-# MESSAGE VIEW
-# ===============================
+# =============================
+# DETAILS
+# =============================
 if st.session_state.selected_msg is not None:
 
-    if st.session_state.selected_msg >= len(st.session_state.messages):
-        st.session_state.selected_msg = None
-    else:
-        msg = st.session_state.messages[st.session_state.selected_msg]
+    msg = st.session_state.messages[st.session_state.selected_msg]
 
-        st.markdown("---")
-        st.subheader("📨 Message Details")
+    st.markdown("---")
+    st.subheader("📨 Message Details")
 
-        st.write(f"**Name:** {msg['name']}")
-        st.write(f"**Email:** {msg['email']}")
-        st.write(f"**Time:** {msg['time']}")
-        st.write(f"**Sentiment:** {msg['sentiment']}")
-
-        st.markdown("### Message")
-        st.info(msg["text"])
-
-    # ---------------------------
-    # AI INSIGHT
-    # ---------------------------
-    st.markdown("### 🧠 AI Insight")
+    st.write(f"👤 {msg.get('name', 'N/A')}")
+    st.write(f"📧 {msg.get('email', 'N/A')}")
+    st.write(f"📅 {msg.get('date', 'N/A')}")
+    st.write(f"⏰ {msg.get('time', 'N/A')}")
 
     if msg["sentiment"] == "Negative":
-        insight = "Customer is unhappy. Likely issue needs urgent attention."
-        reply = f"""
-        Dear {msg['name']},
-
-        we are sorry for your experience.
-        Our team is already working on improving this issue.
-
-        Best regards  
-        Support Team
-        """
+        st.error(f"🧠 Sentiment: {msg['sentiment']}")
+    elif msg["sentiment"] == "Positive":
+        st.success(f"🧠 Sentiment: {msg['sentiment']}")
     else:
-        insight = "Customer feedback is positive."
-        reply = f"""
-        Dear {msg['name']},
+        st.warning(f"🧠 Sentiment: {msg['sentiment']}")
 
-        thank you for your positive feedback!
-        We are happy you enjoy our service.
+    st.markdown("### Message")
+    st.info(msg["text"])
 
-        Best regards  
-        Support Team
-        """
+    # AI
+    subject = generate_subject(msg)
+    reply = generate_ai_reply(msg)
 
-    st.warning(insight)
+    st.markdown("### ✉️ AI Reply")
+    edited = st.text_area("Edit Reply", reply, height=200)
 
-    # ---------------------------
-    # AUTO RESPONSE
-    # ---------------------------
-    st.markdown("### ✉️ Suggested Reply")
+    if st.button("📤 Send Email"):
 
-    edited_reply = st.text_area("Edit reply:", reply, height=200)
-
-    if st.button("📤 Send Reply"):
         send_email(
-            to_email=msg["email"],
-            subject="Response to your feedback",
-            name=msg["name"],
-            reply=edited_reply
-    )
-    st.success("Reply sent!")
+            msg["email"],
+            subject,
+            msg["name"],
+            edited
+        )
+
+        st.success("🚀 Email sent!")

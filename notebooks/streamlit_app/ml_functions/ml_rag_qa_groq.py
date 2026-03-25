@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = PROJECT_ROOT
 
 ENV_PATH = PROJECT_ROOT / ".env"
 CURRENT_DIR = Path(__file__).resolve().parent
